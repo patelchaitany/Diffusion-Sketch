@@ -1,0 +1,54 @@
+# ─── Data ────────────────────────────────────────────────────────────
+data:
+  train_dir: data/train
+  val_dir: data/val
+  image_size: 256
+  num_workers: 4
+
+# ─── Diffusion ───────────────────────────────────────────────────────
+diffusion:
+  timesteps: 1000
+  beta_start: 1.0e-4
+  beta_end: 0.02
+
+# ─── Model ───────────────────────────────────────────────────────────
+model:
+  in_channels: 3
+  cond_channels: 3
+  base_channels: 128
+  channel_mults: [1, 2, 4, 8]
+  attention_resolutions: [2, 3]
+  num_res_blocks: 2
+  dropout: 0.1
+
+# ─── Loss weights (paper best: Gradient + Laplacian + Histogram) ─────
+loss:
+  lambda_l1: 100.0
+  lambda_laplacian: 0.5
+  lambda_gradient: 0.5
+  lambda_histogram: 0.1
+  lambda_perceptual: 0.0
+  use_perceptual: false
+  aux_warmup_frac: 0.05           # fraction of training before aux losses kick in
+
+# ─── Training ────────────────────────────────────────────────────────
+training:
+  epochs: 200
+  batch_size: 16
+  learning_rate: 2.0e-4
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+  checkpoint_every: 20            # save checkpoint every N epochs
+  sample_every: 10                # generate samples every N epochs
+  ddim_sample_steps: 50
+
+# ─── Ray ─────────────────────────────────────────────────────────────
+ray:
+  num_workers: 1
+  use_gpu: true
+
+# ─── Paths ───────────────────────────────────────────────────────────
+paths:
+  checkpoint_dir: checkpoints
+  sample_dir: samples
+  ray_results_dir: ray_results
