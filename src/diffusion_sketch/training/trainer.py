@@ -1,4 +1,4 @@
-"""Ray Train-based distributed training loop."""
+"""Ray Train-based distributed training loop with TensorBoard logging."""
 
 import logging
 import os
@@ -7,12 +7,12 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 
 import ray
 from ray import train as ray_train
 from ray.train import ScalingConfig, RunConfig, CheckpointConfig
 from ray.train.torch import TorchTrainer
-from ray.util.metrics import Counter, Gauge
 
 logging.getLogger("ray.train").setLevel(logging.WARNING)
 logging.getLogger("ray._private").setLevel(logging.ERROR)
@@ -23,19 +23,6 @@ from diffusion_sketch.models import ConditionalUNet, GaussianDiffusion
 from diffusion_sketch.losses import CombinedDiffusionLoss
 from .utils import save_checkpoint, save_samples
 
-# Custom Prometheus gauges — visible at http://localhost:8080 and queryable in Prometheus
-_gauge_loss = Gauge("diffusion_loss_total", description="Total combined loss")
-_gauge_mse = Gauge("diffusion_loss_mse", description="Noise prediction MSE loss")
-_gauge_l1 = Gauge("diffusion_loss_l1", description="L1 reconstruction loss")
-_gauge_laplacian = Gauge("diffusion_loss_laplacian", description="Laplacian edge loss")
-_gauge_gradient = Gauge("diffusion_loss_gradient", description="Gradient shading loss")
-_gauge_histogram = Gauge("diffusion_loss_histogram", description="Histogram color loss")
-_gauge_epoch = Gauge("diffusion_epoch", description="Current training epoch")
-_gauge_lr = Gauge("diffusion_learning_rate", description="Current learning rate")
-_gauge_gpu_mem = Gauge("diffusion_gpu_peak_memory_mb", description="Peak GPU memory in MB")
-_gauge_img_per_sec = Gauge("diffusion_images_per_sec", description="Training throughput")
-_counter_steps = Counter("diffusion_global_steps", description="Total optimizer steps")
-
 
 def _gpu_memory_mb():
     if torch.cuda.is_available():
@@ -43,20 +30,16 @@ def _gpu_memory_mb():
     return 0.0
 
 
-def _export_prometheus_metrics(metrics, loss_dict, steps_this_epoch):
-    """Push current values to Ray's Prometheus-compatible gauges."""
-    _gauge_loss.set(metrics["loss"])
-    _gauge_epoch.set(metrics["epoch"])
-    _gauge_lr.set(metrics["lr"])
-    _gauge_gpu_mem.set(metrics["gpu_peak_memory_mb"])
-    _gauge_img_per_sec.set(metrics["images_per_sec"])
-    _counter_steps.inc(steps_this_epoch)
-
-    _gauge_mse.set(loss_dict.get("mse", 0))
-    _gauge_l1.set(loss_dict.get("l1", 0))
-    _gauge_laplacian.set(loss_dict.get("laplacian", 0))
-    _gauge_gradient.set(loss_dict.get("gradient", 0))
-    _gauge_histogram.set(loss_dict.get("histogram", 0))
+def _log_tb(writer, epoch, metrics, loss_dict):
+    """Write all scalars to TensorBoard."""
+    writer.add_scalar("loss/total", metrics["loss"], epoch)
+    for k, v in loss_dict.items():
+        writer.add_scalar(f"loss/{k}", v, epoch)
+    writer.add_scalar("training/lr", metrics["lr"], epoch)
+    writer.add_scalar("training/epoch_time_sec", metrics["epoch_time_sec"], epoch)
+    writer.add_scalar("training/images_per_sec", metrics["images_per_sec"], epoch)
+    writer.add_scalar("system/gpu_peak_memory_mb", metrics["gpu_peak_memory_mb"], epoch)
+    writer.flush()
 
 
 def _log_epoch(metrics, loss_dict):
@@ -139,6 +122,10 @@ def _train_loop(train_cfg: dict):
     global_step = 0
     timesteps = cfg.diffusion["timesteps"]
 
+    is_rank0 = ray_train.get_context().get_world_rank() == 0
+    tb_dir = cfg.paths.get("tensorboard_dir", "runs")
+    writer = SummaryWriter(log_dir=tb_dir) if is_rank0 else None
+
     total_epochs = cfg.training["epochs"]
     for epoch in range(total_epochs):
         model.train()
@@ -182,19 +169,26 @@ def _train_loop(train_cfg: dict):
         avg_loss = epoch_loss / max(num_batches, 1)
         images_per_sec = (num_batches * cfg.training["batch_size"]) / max(epoch_time, 1e-6)
 
-        is_rank0 = ray_train.get_context().get_world_rank() == 0
         sample_every = cfg.training["sample_every"]
         ckpt_every = cfg.training["checkpoint_every"]
 
         if is_rank0 and (epoch + 1) % sample_every == 0:
-            val_sketch, _ = next(iter(val_loader))
+            val_sketch, val_target = next(iter(val_loader))
+            val_sketch = val_sketch.to(device)
             unwrapped = model.module if hasattr(model, "module") else model
+            n = min(4, val_sketch.shape[0])
             save_samples(
-                diffusion, unwrapped, val_sketch.to(device), epoch + 1,
+                diffusion, unwrapped, val_sketch, epoch + 1,
                 folder=cfg.paths["sample_dir"],
-                num_samples=min(4, val_sketch.shape[0]),
+                num_samples=n,
                 ddim_steps=cfg.training["ddim_sample_steps"],
             )
+            if writer is not None:
+                with torch.no_grad():
+                    gen = diffusion.sample_ddim(unwrapped, val_sketch[:n], val_sketch[:n].shape, ddim_steps=cfg.training["ddim_sample_steps"])
+                writer.add_images("samples/sketch", val_sketch[:n] * 0.5 + 0.5, epoch + 1)
+                writer.add_images("samples/generated", gen * 0.5 + 0.5, epoch + 1)
+                writer.add_images("samples/ground_truth", val_target[:n].to(device) * 0.5 + 0.5, epoch + 1)
 
         metrics = {
             "loss": avg_loss,
@@ -212,7 +206,8 @@ def _train_loop(train_cfg: dict):
 
         if is_rank0:
             _log_epoch(metrics, loss_dict)
-            _export_prometheus_metrics(metrics, loss_dict, num_batches)
+            if writer is not None:
+                _log_tb(writer, epoch + 1, metrics, loss_dict)
 
         if (epoch + 1) % ckpt_every == 0:
             unwrapped = model.module if hasattr(model, "module") else model
@@ -223,6 +218,9 @@ def _train_loop(train_cfg: dict):
             ray_train.report(metrics, checkpoint=ray_train.Checkpoint.from_directory(ckpt_dir))
         else:
             ray_train.report(metrics)
+
+    if writer is not None:
+        writer.close()
 
 
 def run_training(cfg: Config):
@@ -239,11 +237,11 @@ def run_training(cfg: Config):
 
     dashboard_url = getattr(ctx, "dashboard_url", None)
     dash = f"http://{dashboard_url}" if dashboard_url else f"http://{dashboard_host}:{dashboard_port}"
+    tb_dir = os.path.abspath(cfg.paths.get("tensorboard_dir", "runs"))
 
     print(f"\n{'='*60}")
     print(f"  Ray Dashboard:  {dash}")
-    print(f"  View metrics:   {dash}/#/metrics")
-    print(f"  View jobs:      {dash}/#/jobs")
+    print(f"  TensorBoard:    tensorboard --logdir {tb_dir} --bind_all")
     print(f"{'='*60}\n")
 
     trainer = TorchTrainer(

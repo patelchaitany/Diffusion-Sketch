@@ -1,4 +1,4 @@
-.PHONY: install test test-data test-config test-transforms train clean help
+.PHONY: install test test-data test-config test-transforms train tensorboard clean help
 
 PYTHON ?= .venv/bin/python
 PYTEST ?= .venv/bin/pytest
@@ -24,6 +24,9 @@ test-config:  ## Run config loading tests
 
 train:  ## Start training with default config
 	$(PYTHON) -m diffusion_sketch
+
+tensorboard:  ## Launch TensorBoard to view training metrics
+	$(PYTHON) -m tensorboard.main --logdir runs --bind_all
 
 clean:  ## Remove generated artifacts
 	rm -rf .venv __pycache__ *.egg-info ray_results

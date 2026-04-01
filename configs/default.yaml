@@ -55,3 +55,4 @@ paths:
   checkpoint_dir: checkpoints
   sample_dir: samples
   ray_results_dir: ray_results
+  tensorboard_dir: runs

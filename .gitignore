@@ -15,6 +15,7 @@ build/
 checkpoints/
 samples/
 ray_results/
+runs/
 
 # IDE
 .idea/
