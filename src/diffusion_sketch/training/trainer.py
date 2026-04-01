@@ -231,12 +231,13 @@ def run_training(cfg: Config):
     dashboard_port = cfg.ray.get("dashboard_port", 8265)
     metrics_port = cfg.ray.get("metrics_export_port", 8080)
 
+    os.environ.setdefault("RAY_METRICS_EXPORT_PORT", str(metrics_port))
+
     ctx = ray.init(
         ignore_reinit_error=True,
         include_dashboard=True,
         dashboard_host=dashboard_host,
         dashboard_port=dashboard_port,
-        metrics_export_port=metrics_port,
     )
 
     dashboard_url = getattr(ctx, "dashboard_url", None)
@@ -244,10 +245,6 @@ def run_training(cfg: Config):
     print(f"\n{'='*60}")
     print(f"  Ray Dashboard:   {dash}")
     print(f"  Metrics (raw):   http://localhost:{metrics_port}")
-    print(f"  Prometheus UI:   http://localhost:9090")
-    print(f"")
-    print(f"  To start Prometheus, run in another terminal:")
-    print(f"    ray metrics launch-prometheus")
     print(f"{'='*60}\n")
 
     trainer = TorchTrainer(
