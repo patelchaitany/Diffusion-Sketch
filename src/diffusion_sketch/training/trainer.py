@@ -1,6 +1,8 @@
 """Ray Train-based distributed training loop."""
 
+import logging
 import os
+import time
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -11,11 +13,20 @@ from ray import train as ray_train
 from ray.train import ScalingConfig, RunConfig, CheckpointConfig
 from ray.train.torch import TorchTrainer
 
+logging.getLogger("ray.train").setLevel(logging.WARNING)
+logging.getLogger("ray._private").setLevel(logging.ERROR)
+
 from diffusion_sketch.config import Config
 from diffusion_sketch.data import SketchColorDataset
 from diffusion_sketch.models import ConditionalUNet, GaussianDiffusion
 from diffusion_sketch.losses import CombinedDiffusionLoss
 from .utils import save_checkpoint, save_samples
+
+
+def _gpu_memory_mb():
+    if torch.cuda.is_available():
+        return torch.cuda.max_memory_allocated() / 1024 ** 2
+    return 0.0
 
 
 def _train_loop(train_cfg: dict):
@@ -80,10 +91,14 @@ def _train_loop(train_cfg: dict):
     global_step = 0
     timesteps = cfg.diffusion["timesteps"]
 
-    for epoch in range(cfg.training["epochs"]):
+    total_epochs = cfg.training["epochs"]
+    for epoch in range(total_epochs):
         model.train()
         epoch_loss = 0.0
         num_batches = 0
+        epoch_start = time.time()
+        if use_amp:
+            torch.cuda.reset_peak_memory_stats()
 
         for sketch, target in train_loader:
             sketch, target = sketch.to(device), target.to(device)
@@ -115,7 +130,9 @@ def _train_loop(train_cfg: dict):
             global_step += 1
 
         scheduler.step()
+        epoch_time = time.time() - epoch_start
         avg_loss = epoch_loss / max(num_batches, 1)
+        images_per_sec = (num_batches * cfg.training["batch_size"]) / max(epoch_time, 1e-6)
 
         is_rank0 = ray_train.get_context().get_world_rank() == 0
         sample_every = cfg.training["sample_every"]
@@ -131,8 +148,18 @@ def _train_loop(train_cfg: dict):
                 ddim_steps=cfg.training["ddim_sample_steps"],
             )
 
-        metrics = {"loss": avg_loss, "epoch": epoch, "lr": scheduler.get_last_lr()[0]}
-        metrics.update({f"loss_{k}": v for k, v in loss_dict.items()})
+        metrics = {
+            "loss": avg_loss,
+            "epoch": epoch + 1,
+            "progress_pct": round(100 * (epoch + 1) / total_epochs, 1),
+            "lr": scheduler.get_last_lr()[0],
+            "epoch_time_sec": round(epoch_time, 2),
+            "images_per_sec": round(images_per_sec, 1),
+            "global_step": global_step,
+            "gpu_peak_memory_mb": round(_gpu_memory_mb(), 1),
+        }
+        for k, v in loss_dict.items():
+            metrics[f"loss_{k}"] = v
 
         if (epoch + 1) % ckpt_every == 0:
             unwrapped = model.module if hasattr(model, "module") else model
@@ -147,7 +174,23 @@ def _train_loop(train_cfg: dict):
 
 def run_training(cfg: Config):
     """Launch Ray distributed training from a loaded Config."""
-    ray.init(ignore_reinit_error=True)
+    dashboard_host = cfg.ray.get("dashboard_host", "0.0.0.0")
+    dashboard_port = cfg.ray.get("dashboard_port", 8265)
+
+    ctx = ray.init(
+        ignore_reinit_error=True,
+        include_dashboard=True,
+        dashboard_host=dashboard_host,
+        dashboard_port=dashboard_port,
+    )
+
+    dashboard_url = getattr(ctx, "dashboard_url", None)
+    if dashboard_url:
+        print(f"\n{'='*60}")
+        print(f"  Ray Dashboard:  http://{dashboard_url}")
+        print(f"{'='*60}\n")
+    else:
+        print(f"\n  Ray Dashboard:  http://{dashboard_host}:{dashboard_port}\n")
 
     trainer = TorchTrainer(
         train_loop_per_worker=_train_loop,
@@ -164,6 +207,6 @@ def run_training(cfg: Config):
     )
 
     result = trainer.fit()
-    print(f"Training complete. Best loss: {result.metrics.get('loss', 'N/A')}")
+    print(f"\nTraining complete. Best loss: {result.metrics.get('loss', 'N/A')}")
     print(f"Checkpoints: {result.checkpoint}")
     return result
