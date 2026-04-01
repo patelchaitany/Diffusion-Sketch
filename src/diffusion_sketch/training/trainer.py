@@ -241,10 +241,16 @@ def run_training(cfg: Config):
     )
 
     dashboard_url = getattr(ctx, "dashboard_url", None)
-    dash = f"http://{dashboard_url}" if dashboard_url else f"http://{dashboard_host}:{dashboard_port}"
+    if dashboard_url:
+        dash_host = dashboard_url.split(":")[0]
+        dash = f"http://{dashboard_url}"
+    else:
+        dash_host = dashboard_host
+        dash = f"http://{dashboard_host}:{dashboard_port}"
+
     print(f"\n{'='*60}")
     print(f"  Ray Dashboard:   {dash}")
-    print(f"  Metrics (raw):   http://localhost:{metrics_port}")
+    print(f"  Metrics (raw):   http://{dash_host}:{metrics_port}")
     print(f"{'='*60}\n")
 
     trainer = TorchTrainer(
