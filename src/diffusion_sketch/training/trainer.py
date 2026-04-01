@@ -29,6 +29,24 @@ def _gpu_memory_mb():
     return 0.0
 
 
+def _log_epoch(metrics, loss_dict):
+    """Print a formatted log line to the terminal."""
+    e = metrics["epoch"]
+    total = metrics.get("total_epochs", "?")
+    pct = metrics["progress_pct"]
+    t = metrics["epoch_time_sec"]
+    lr = metrics["lr"]
+    ips = metrics["images_per_sec"]
+    mem = metrics["gpu_peak_memory_mb"]
+
+    header = f"Epoch {e}/{total} ({pct}%)  |  {t:.1f}s  |  {ips:.0f} img/s  |  GPU {mem:.0f}MB  |  lr {lr:.2e}"
+    parts = [f"{k}={v:.4f}" for k, v in loss_dict.items()]
+    losses_str = "  ".join(parts)
+    print(f"  {header}")
+    print(f"    losses: {losses_str}")
+    print()
+
+
 def _train_loop(train_cfg: dict):
     cfg = Config(train_cfg)
     device = ray_train.torch.get_device()
@@ -151,6 +169,7 @@ def _train_loop(train_cfg: dict):
         metrics = {
             "loss": avg_loss,
             "epoch": epoch + 1,
+            "total_epochs": total_epochs,
             "progress_pct": round(100 * (epoch + 1) / total_epochs, 1),
             "lr": scheduler.get_last_lr()[0],
             "epoch_time_sec": round(epoch_time, 2),
@@ -160,6 +179,9 @@ def _train_loop(train_cfg: dict):
         }
         for k, v in loss_dict.items():
             metrics[f"loss_{k}"] = v
+
+        if is_rank0:
+            _log_epoch(metrics, loss_dict)
 
         if (epoch + 1) % ckpt_every == 0:
             unwrapped = model.module if hasattr(model, "module") else model
