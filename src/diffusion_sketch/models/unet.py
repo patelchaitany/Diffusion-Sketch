@@ -180,8 +180,8 @@ class ConditionalUNet(nn.Module):
         for block, down in zip(self.down_blocks, self.down_samples):
             for layer in block:
                 h = self._ckpt(layer, h, t_emb)
+            skips.append(h)
             if not isinstance(down, nn.Identity):
-                skips.append(h)
                 h = down(h)
 
         h = self._ckpt(self.mid_block1, h, t_emb)
