@@ -229,9 +229,6 @@ def run_training(cfg: Config):
     """Launch Ray distributed training from a loaded Config."""
     dashboard_host = cfg.ray.get("dashboard_host", "0.0.0.0")
     dashboard_port = cfg.ray.get("dashboard_port", 8265)
-    metrics_port = cfg.ray.get("metrics_export_port", 8080)
-
-    os.environ.setdefault("RAY_METRICS_EXPORT_PORT", str(metrics_port))
 
     ctx = ray.init(
         ignore_reinit_error=True,
@@ -241,16 +238,12 @@ def run_training(cfg: Config):
     )
 
     dashboard_url = getattr(ctx, "dashboard_url", None)
-    if dashboard_url:
-        dash_host = dashboard_url.split(":")[0]
-        dash = f"http://{dashboard_url}"
-    else:
-        dash_host = dashboard_host
-        dash = f"http://{dashboard_host}:{dashboard_port}"
+    dash = f"http://{dashboard_url}" if dashboard_url else f"http://{dashboard_host}:{dashboard_port}"
 
     print(f"\n{'='*60}")
-    print(f"  Ray Dashboard:   {dash}")
-    print(f"  Metrics (raw):   http://{dash_host}:{metrics_port}")
+    print(f"  Ray Dashboard:  {dash}")
+    print(f"  View metrics:   {dash}/#/metrics")
+    print(f"  View jobs:      {dash}/#/jobs")
     print(f"{'='*60}\n")
 
     trainer = TorchTrainer(
