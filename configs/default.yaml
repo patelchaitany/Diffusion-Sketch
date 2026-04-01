@@ -49,6 +49,7 @@ ray:
   use_gpu: true
   dashboard_host: 0.0.0.0              # set to 127.0.0.1 for local-only access
   dashboard_port: 8265
+  metrics_export_port: 8080            # port for Prometheus to scrape
 
 # ─── Paths ───────────────────────────────────────────────────────────
 paths:

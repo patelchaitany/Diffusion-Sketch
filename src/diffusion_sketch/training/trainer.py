@@ -12,6 +12,7 @@ import ray
 from ray import train as ray_train
 from ray.train import ScalingConfig, RunConfig, CheckpointConfig
 from ray.train.torch import TorchTrainer
+from ray.util.metrics import Counter, Gauge
 
 logging.getLogger("ray.train").setLevel(logging.WARNING)
 logging.getLogger("ray._private").setLevel(logging.ERROR)
@@ -22,11 +23,40 @@ from diffusion_sketch.models import ConditionalUNet, GaussianDiffusion
 from diffusion_sketch.losses import CombinedDiffusionLoss
 from .utils import save_checkpoint, save_samples
 
+# Custom Prometheus gauges — visible at http://localhost:8080 and queryable in Prometheus
+_gauge_loss = Gauge("diffusion_loss_total", description="Total combined loss")
+_gauge_mse = Gauge("diffusion_loss_mse", description="Noise prediction MSE loss")
+_gauge_l1 = Gauge("diffusion_loss_l1", description="L1 reconstruction loss")
+_gauge_laplacian = Gauge("diffusion_loss_laplacian", description="Laplacian edge loss")
+_gauge_gradient = Gauge("diffusion_loss_gradient", description="Gradient shading loss")
+_gauge_histogram = Gauge("diffusion_loss_histogram", description="Histogram color loss")
+_gauge_epoch = Gauge("diffusion_epoch", description="Current training epoch")
+_gauge_lr = Gauge("diffusion_learning_rate", description="Current learning rate")
+_gauge_gpu_mem = Gauge("diffusion_gpu_peak_memory_mb", description="Peak GPU memory in MB")
+_gauge_img_per_sec = Gauge("diffusion_images_per_sec", description="Training throughput")
+_counter_steps = Counter("diffusion_global_steps", description="Total optimizer steps")
+
 
 def _gpu_memory_mb():
     if torch.cuda.is_available():
         return torch.cuda.max_memory_allocated() / 1024 ** 2
     return 0.0
+
+
+def _export_prometheus_metrics(metrics, loss_dict, steps_this_epoch):
+    """Push current values to Ray's Prometheus-compatible gauges."""
+    _gauge_loss.set(metrics["loss"])
+    _gauge_epoch.set(metrics["epoch"])
+    _gauge_lr.set(metrics["lr"])
+    _gauge_gpu_mem.set(metrics["gpu_peak_memory_mb"])
+    _gauge_img_per_sec.set(metrics["images_per_sec"])
+    _counter_steps.inc(steps_this_epoch)
+
+    _gauge_mse.set(loss_dict.get("mse", 0))
+    _gauge_l1.set(loss_dict.get("l1", 0))
+    _gauge_laplacian.set(loss_dict.get("laplacian", 0))
+    _gauge_gradient.set(loss_dict.get("gradient", 0))
+    _gauge_histogram.set(loss_dict.get("histogram", 0))
 
 
 def _log_epoch(metrics, loss_dict):
@@ -182,6 +212,7 @@ def _train_loop(train_cfg: dict):
 
         if is_rank0:
             _log_epoch(metrics, loss_dict)
+            _export_prometheus_metrics(metrics, loss_dict, num_batches)
 
         if (epoch + 1) % ckpt_every == 0:
             unwrapped = model.module if hasattr(model, "module") else model
@@ -198,21 +229,26 @@ def run_training(cfg: Config):
     """Launch Ray distributed training from a loaded Config."""
     dashboard_host = cfg.ray.get("dashboard_host", "0.0.0.0")
     dashboard_port = cfg.ray.get("dashboard_port", 8265)
+    metrics_port = cfg.ray.get("metrics_export_port", 8080)
 
     ctx = ray.init(
         ignore_reinit_error=True,
         include_dashboard=True,
         dashboard_host=dashboard_host,
         dashboard_port=dashboard_port,
+        metrics_export_port=metrics_port,
     )
 
     dashboard_url = getattr(ctx, "dashboard_url", None)
-    if dashboard_url:
-        print(f"\n{'='*60}")
-        print(f"  Ray Dashboard:  http://{dashboard_url}")
-        print(f"{'='*60}\n")
-    else:
-        print(f"\n  Ray Dashboard:  http://{dashboard_host}:{dashboard_port}\n")
+    dash = f"http://{dashboard_url}" if dashboard_url else f"http://{dashboard_host}:{dashboard_port}"
+    print(f"\n{'='*60}")
+    print(f"  Ray Dashboard:   {dash}")
+    print(f"  Metrics (raw):   http://localhost:{metrics_port}")
+    print(f"  Prometheus UI:   http://localhost:9090")
+    print(f"")
+    print(f"  To start Prometheus, run in another terminal:")
+    print(f"    ray metrics launch-prometheus")
+    print(f"{'='*60}\n")
 
     trainer = TorchTrainer(
         train_loop_per_worker=_train_loop,
