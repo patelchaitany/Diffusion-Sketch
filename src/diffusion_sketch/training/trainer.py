@@ -30,6 +30,7 @@ def _train_loop(train_cfg: dict):
         attention_resolutions=tuple(cfg.model["attention_resolutions"]),
         num_res_blocks=cfg.model["num_res_blocks"],
         dropout=cfg.model["dropout"],
+        gradient_checkpointing=cfg.model.get("gradient_checkpointing", False),
     )
     model = ray_train.torch.prepare_model(model)
 

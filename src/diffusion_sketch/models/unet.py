@@ -13,6 +13,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 
 class SinusoidalTimeEmbedding(nn.Module):
@@ -96,13 +97,15 @@ class ConditionalUNet(nn.Module):
         self,
         in_channels=3,
         cond_channels=3,
-        base_channels=128,
+        base_channels=64,
         channel_mults=(1, 2, 4, 8),
-        attention_resolutions=(2, 3),
+        attention_resolutions=(3,),
         num_res_blocks=2,
         dropout=0.1,
+        gradient_checkpointing=False,
     ):
         super().__init__()
+        self.gradient_checkpointing = gradient_checkpointing
         time_dim = base_channels * 4
 
         self.time_embed = nn.Sequential(
@@ -159,6 +162,16 @@ class ConditionalUNet(nn.Module):
         self.out_norm = nn.GroupNorm(32, ch)
         self.out_conv = nn.Conv2d(ch, in_channels, 3, padding=1)
 
+    def _run_layer(self, layer, h, t_emb):
+        if isinstance(layer, ResBlock):
+            return layer(h, t_emb)
+        return layer(h)
+
+    def _ckpt(self, layer, h, t_emb):
+        if self.gradient_checkpointing and self.training:
+            return checkpoint(self._run_layer, layer, h, t_emb, use_reentrant=False)
+        return self._run_layer(layer, h, t_emb)
+
     def forward(self, x_noisy, t, sketch):
         t_emb = self.time_embed(t)
         h = self.input_conv(torch.cat([x_noisy, sketch], dim=1))
@@ -166,14 +179,14 @@ class ConditionalUNet(nn.Module):
         skips = [h]
         for block, down in zip(self.down_blocks, self.down_samples):
             for layer in block:
-                h = layer(h, t_emb) if isinstance(layer, ResBlock) else layer(h)
+                h = self._ckpt(layer, h, t_emb)
             if not isinstance(down, nn.Identity):
                 skips.append(h)
                 h = down(h)
 
-        h = self.mid_block1(h, t_emb)
+        h = self._ckpt(self.mid_block1, h, t_emb)
         h = self.mid_attn(h)
-        h = self.mid_block2(h, t_emb)
+        h = self._ckpt(self.mid_block2, h, t_emb)
 
         for block, up in zip(self.up_blocks, self.up_samples):
             first = True
@@ -182,7 +195,7 @@ class ConditionalUNet(nn.Module):
                     if first and skips:
                         h = torch.cat([h, skips.pop()], dim=1)
                         first = False
-                    h = layer(h, t_emb)
+                    h = self._ckpt(layer, h, t_emb)
                 else:
                     h = layer(h)
             if not isinstance(up, nn.Identity):

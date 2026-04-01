@@ -15,11 +15,12 @@ diffusion:
 model:
   in_channels: 3
   cond_channels: 3
-  base_channels: 128
+  base_channels: 64
   channel_mults: [1, 2, 4, 8]
-  attention_resolutions: [2, 3]
+  attention_resolutions: [3]            # attention only at lowest resolution (16x16)
   num_res_blocks: 2
   dropout: 0.1
+  gradient_checkpointing: true
 
 # ─── Loss weights (paper best: Gradient + Laplacian + Histogram) ─────
 loss:
@@ -34,7 +35,7 @@ loss:
 # ─── Training ────────────────────────────────────────────────────────
 training:
   epochs: 200
-  batch_size: 16
+  batch_size: 4
   learning_rate: 2.0e-4
   weight_decay: 1.0e-4
   grad_clip: 1.0
