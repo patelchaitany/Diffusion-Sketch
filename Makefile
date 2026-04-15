@@ -29,6 +29,6 @@ tensorboard:  ## Launch TensorBoard to view training metrics
 	$(PYTHON) -m tensorboard.main --logdir runs --bind_all
 
 clean:  ## Remove generated artifacts
-	rm -rf .venv __pycache__ *.egg-info ray_results
+	rm -rf .venv __pycache__ *.egg-info
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -type d -name '*.egg-info' -exec rm -rf {} + 2>/dev/null || true

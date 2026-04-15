@@ -39,7 +39,7 @@ info "Creating data directories ..."
 mkdir -p data/train data/val
 
 # ── 5. Create output directories ────────────────────────────────────
-mkdir -p checkpoints samples ray_results
+mkdir -p checkpoints samples runs
 
 # ── 6. Verify installation ──────────────────────────────────────────
 info "Verifying installation ..."

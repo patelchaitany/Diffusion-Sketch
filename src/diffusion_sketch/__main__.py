@@ -7,17 +7,6 @@ Examples:
 """
 
 import argparse
-import os
-import warnings
-
-os.environ["RAY_DEDUP_LOGS"] = "0"
-os.environ.setdefault("PYTHONWARNINGS", "ignore::DeprecationWarning")
-
-warnings.filterwarnings("ignore", category=DeprecationWarning)
-warnings.filterwarnings("ignore", category=FutureWarning)
-warnings.filterwarnings("ignore", message=".*State API.*")
-warnings.filterwarnings("ignore", message=".*ENV_VAR_OVERRIDE_ON_ZERO.*")
-warnings.filterwarnings("ignore", message=".*accelerator visible devices.*")
 
 from diffusion_sketch.config import load_config
 from diffusion_sketch.training import run_training

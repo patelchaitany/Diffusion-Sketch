@@ -12,7 +12,6 @@ class TestConfigLoading:
         assert "model" in cfg
         assert "loss" in cfg
         assert "training" in cfg
-        assert "ray" in cfg
         assert "paths" in cfg
 
     def test_attribute_access(self):
