@@ -42,6 +42,21 @@ class GaussianDiffusion(nn.Module):
     def _extract(self, a, t, x_shape):
         return a.gather(-1, t).reshape(t.shape[0], *((1,) * (len(x_shape) - 1)))
 
+    def snr(self, t):
+        """Signal-to-noise ratio: α̅_t / (1 - α̅_t)."""
+        return self._extract(self.alphas_cumprod, t, t.shape) / \
+               self._extract(1.0 - self.alphas_cumprod, t, t.shape).clamp(min=1e-8)
+
+    def min_snr_weight(self, t, gamma=5.0):
+        """Min-SNR-γ per-sample loss weight: min(SNR(t), γ) / SNR(t).
+
+        Clamps timestep weighting so high-noise steps don't dominate.
+        From "Efficient Diffusion Training via Min-SNR Weighting Strategy"
+        (Hang et al., 2023).
+        """
+        s = self.snr(t)
+        return (s.clamp(max=gamma) / s).clamp(min=0.0, max=1.0)
+
     def q_sample(self, x_start, t, noise=None):
         """Forward diffusion: q(x_t | x_0)."""
         if noise is None:

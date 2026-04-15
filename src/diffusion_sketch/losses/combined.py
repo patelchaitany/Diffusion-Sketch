@@ -10,17 +10,15 @@ from .perceptual import PerceptualLoss
 
 
 class CombinedDiffusionLoss(nn.Module):
-    """total = MSE(noise, noise_pred)
-            + lambda_l1        * L1(x0, x0_pred)
-            + lambda_laplacian * Laplacian(x0, x0_pred)
-            + lambda_gradient  * Gradient(x0, x0_pred)
-            + lambda_histogram * Histogram(x0, x0_pred)
-           [+ lambda_perceptual * Perceptual(x0, x0_pred)]
+    """Auxiliary losses on x0 predictions (L1, Laplacian, Gradient, Histogram).
+
+    The noise MSE is handled separately in the trainer so min-SNR weighting
+    can be applied per-sample. This module computes only the auxiliary terms.
     """
 
     def __init__(
         self,
-        lambda_l1=100.0,
+        lambda_l1=1.0,
         lambda_laplacian=0.5,
         lambda_gradient=0.5,
         lambda_histogram=0.1,
@@ -38,12 +36,14 @@ class CombinedDiffusionLoss(nn.Module):
         self.gradient_loss = GradientLoss()
         self.histogram_loss = HistogramLoss()
         self.perceptual_loss = PerceptualLoss() if use_perceptual else None
+        self._last_aux = None
 
     def forward(self, noise, noise_pred, x0, x0_pred, apply_aux=True):
         mse = F.mse_loss(noise_pred, noise)
         loss_dict = {"mse": mse.item()}
 
         if not apply_aux:
+            self._last_aux = None
             return mse, loss_dict
 
         l1 = F.l1_loss(x0_pred, x0)
@@ -51,19 +51,26 @@ class CombinedDiffusionLoss(nn.Module):
         grad = self.gradient_loss(x0, x0_pred)
         hist = self.histogram_loss(x0, x0_pred)
 
-        total = (
-            mse
-            + self.lambda_l1 * l1
+        aux = (
+            self.lambda_l1 * l1
             + self.lambda_laplacian * lap
             + self.lambda_gradient * grad
             + self.lambda_histogram * hist
         )
-        loss_dict.update({"l1": l1.item(), "laplacian": lap.item(), "gradient": grad.item(), "histogram": hist.item()})
+        loss_dict.update({
+            "l1": l1.item(),
+            "laplacian": lap.item(),
+            "gradient": grad.item(),
+            "histogram": hist.item(),
+        })
 
         if self.perceptual_loss is not None:
             perc = self.perceptual_loss(x0, x0_pred)
-            total += self.lambda_perceptual * perc
+            aux = aux + self.lambda_perceptual * perc
             loss_dict["perceptual"] = perc.item()
 
+        self._last_aux = aux
+        total = mse + aux
         loss_dict["total"] = total.item()
+        loss_dict["aux"] = aux.item()
         return total, loss_dict
